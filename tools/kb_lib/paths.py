@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 MARKER = "schemas/memory.schema.json"
@@ -63,16 +62,44 @@ def lock_dir(root: Path) -> Path:
     return path
 
 
-def iter_memory_files(root: Path, *, include_inbox: bool = True):
-    """Yield memory markdown files in deterministic order."""
-    for category in sorted(TYPE_TO_CATEGORY.values()):
-        directory = category_dir(root, category)
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.glob("*.md")):
-            yield path
+def _iter_dir_markdown(directory: Path):
+    if not directory.is_dir() or directory.is_symlink():
+        return
+    for entry in sorted(directory.iterdir()):
+        if entry.suffix == ".md":
+            yield entry
+
+
+def iter_memory_paths(root: Path, *, include_inbox: bool = True):
+    """Yield every memory .md path (including symlinks) without following symlink dirs."""
+    root = root.resolve()
+    memory = memory_dir(root)
+    if memory.is_symlink():
+        yield memory
+    else:
+        for category in sorted(TYPE_TO_CATEGORY.values()):
+            directory = category_dir(root, category)
+            if directory.is_symlink():
+                yield directory
+                continue
+            yield from _iter_dir_markdown(directory)
     if include_inbox:
         inbox = inbox_dir(root)
-        if inbox.is_dir():
-            for path in sorted(inbox.glob("*.md")):
-                yield path
+        if inbox.is_symlink():
+            yield inbox
+        else:
+            yield from _iter_dir_markdown(inbox)
+
+
+def iter_safe_memory_files(root: Path, *, include_inbox: bool = True):
+    """Yield only safe non-symlink regular files for read/index/search."""
+    from .path_safety import is_safe_memory_path
+
+    for path in iter_memory_paths(root, include_inbox=include_inbox):
+        if is_safe_memory_path(root, path):
+            yield path
+
+
+def iter_memory_files(root: Path, *, include_inbox: bool = True):
+    """Backward-compatible alias: safe files only (never follows symlinks)."""
+    yield from iter_safe_memory_files(root, include_inbox=include_inbox)

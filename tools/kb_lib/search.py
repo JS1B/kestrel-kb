@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .parser import MemoryRecord, parse_memory_file
-from .paths import iter_memory_files
+from .paths import iter_safe_memory_files
 
 SNIPPET_RADIUS = 60
 MAX_SNIPPETS = 2
@@ -43,8 +43,8 @@ def search_records(root: Path, query: str) -> list[SearchHit]:
         return []
 
     hits: list[SearchHit] = []
-    for path in iter_memory_files(root, include_inbox=True):
-        record = parse_memory_file(path)
+    for path in iter_safe_memory_files(root, include_inbox=True):
+        record = parse_memory_file(path, root=root)
         hay_meta = " ".join(
             [
                 record.id,

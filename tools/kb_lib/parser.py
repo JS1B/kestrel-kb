@@ -74,7 +74,13 @@ class ParseError(ValueError):
     pass
 
 
-def parse_memory_file(path: Path) -> MemoryRecord:
+def parse_memory_file(path: Path, *, root: Path | None = None) -> MemoryRecord:
+    if root is not None:
+        from .path_safety import assert_safe_memory_path
+
+        assert_safe_memory_path(root, path)
+    elif path.is_symlink():
+        raise ParseError(f"symlink not allowed: {path}")
     text = path.read_text(encoding="utf-8")
     return parse_memory_text(text, path=path)
 

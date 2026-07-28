@@ -6,13 +6,14 @@ from datetime import date
 from pathlib import Path
 
 from .parser import MemoryRecord, parse_memory_file
-from .paths import TYPE_TO_CATEGORY, inbox_dir, iter_memory_files, memory_dir
+from .path_safety import is_safe_memory_path
+from .paths import TYPE_TO_CATEGORY, inbox_dir, iter_safe_memory_files
 
 
 def _canonical_records(root: Path) -> list[MemoryRecord]:
     records: list[MemoryRecord] = []
-    for path in iter_memory_files(root, include_inbox=False):
-        records.append(parse_memory_file(path))
+    for path in iter_safe_memory_files(root, include_inbox=False):
+        records.append(parse_memory_file(path, root=root))
     records.sort(key=lambda r: (r.type, r.id))
     return records
 
@@ -58,7 +59,11 @@ def generate_index(root: Path, records: list[MemoryRecord] | None = None) -> str
         lines.append("")
 
     inbox = inbox_dir(root)
-    inbox_files = sorted(inbox.glob("*.md")) if inbox.is_dir() else []
+    inbox_files: list[Path] = []
+    if inbox.is_dir() and not inbox.is_symlink():
+        inbox_files = sorted(
+            p for p in inbox.iterdir() if p.suffix == ".md" and is_safe_memory_path(root, p)
+        )
     lines.append("## inbox")
     lines.append("")
     if inbox_files:

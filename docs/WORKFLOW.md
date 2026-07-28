@@ -27,19 +27,20 @@ Create with `kb remember`. Always lands in `inbox/` with `status: candidate`.
 - Duplicate IDs, supersession references, cycles
 - Active records with impossible supersession links
 - Secret/transcript pattern guardrails
+- Symlink entries under `memory/` or `inbox/` (reported as errors, never followed)
 - `INDEX.md` freshness
 
 ## Promote
 
 `kb promote inbox/<file>.md [--category <dir>]`
 
-1. **Path safety:** accepts only a direct `inbox/*.md` file inside this repo (no `..`, no paths outside `inbox/`, no symlinks). Bare filenames (`inbox/foo.md` or `foo.md`) are allowed when they resolve to a direct inbox child.
+1. **Path safety:** accepts only a direct `inbox/*.md` file inside this repo (no `..`, no paths outside `inbox/`, no symlinks). Bare filenames (`inbox/foo.md` or `foo.md`) are allowed when they resolve to a direct inbox child. Symlink checks use `lstat` on the original inbox child before `resolve()`.
 2. `--category` must match the record metadata `type` mapping; the CLI never rewrites `type`.
 3. Validates the candidate against schema invariants.
-2. Atomically moves to `memory/<category>/<id>.md` (filename stem must equal `id`).
-3. Sets `status: active`, updates `updated` date.
-4. Regenerates `INDEX.md` under the repo-wide `.lock/kb.lock`.
-5. Refuses overwrite if canonical file exists; rolls back all record/index changes on validation failure.
+4. Atomically moves to `memory/<category>/<id>.md` (filename stem must equal `id`).
+5. Sets `status: active`, updates `updated` date.
+6. Regenerates `INDEX.md` under the repo-wide `.lock/kb.lock`.
+7. Refuses overwrite if canonical file exists; rolls back all record/index changes on validation failure.
 
 ## Supersede
 

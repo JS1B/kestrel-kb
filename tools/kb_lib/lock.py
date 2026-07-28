@@ -49,8 +49,16 @@ def repo_lock(root: Path, *, timeout: float = 30.0):
         yield
 
 
+def _fsync_dir(path: Path) -> None:
+    dir_fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def atomic_write(path: Path, content: str | bytes, *, encoding: str = "utf-8") -> None:
-    """Write via temp file, fsync, and atomic replace; preserve mode when replacing."""
+    """Write via temp file, fsync, atomic replace, then fsync parent directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = 0o644
     if path.exists():
@@ -66,13 +74,9 @@ def atomic_write(path: Path, content: str | bytes, *, encoding: str = "utf-8") -
     finally:
         os.close(fd)
 
-    dir_fd = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-
+    _fsync_dir(path.parent)
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
 
 
 @dataclass
@@ -83,6 +87,8 @@ class FileBackup:
 
 
 def backup_file(path: Path) -> FileBackup:
+    if path.is_symlink():
+        raise ValueError(f"refuse backup of symlink: {path}")
     if path.is_file():
         return FileBackup(path=path, existed=True, content=path.read_bytes())
     return FileBackup(path=path, existed=False, content=None)

@@ -117,6 +117,7 @@
     "canonicalStemMatchesId": true,
     "promoteInboxDirectChildOnly": true,
     "promoteCategoryMustMatchType": true,
+    "symlinkEntriesForbidden": true,
     "repoLockFile": ".lock/kb.lock"
   }
 }

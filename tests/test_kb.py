@@ -20,8 +20,8 @@ from kb_lib.parser import MemoryRecord, parse_memory_text, write_memory_file  # 
 from kb_lib.path_safety import PathSafetyError, resolve_inbox_file  # noqa: E402
 from kb_lib.paths import find_root, inbox_dir  # noqa: E402
 from kb_lib.search import format_hits, search_records  # noqa: E402
-from kb_lib.secrets import scan_assignment_lines, scan_secrets  # noqa: E402
-from kb_lib.lock import kb_lock_path  # noqa: E402
+from kb_lib.secrets import scan_assignment_lines, scan_secrets, scan_yaml_keyed_secrets  # noqa: E402
+from kb_lib.lock import atomic_write, kb_lock_path  # noqa: E402
 from kb_lib.yaml_subset import dump_yaml_subset, parse_yaml_subset  # noqa: E402
 from kb_lib.cli import main as cli_main  # noqa: E402
 
@@ -114,6 +114,18 @@ class TestSecrets(unittest.TestCase):
 
     def test_ignores_export_placeholder(self):
         findings = scan_assignment_lines("export DATABASE_URL=example\n")
+        self.assertEqual(findings, [])
+
+    def test_detects_yaml_keyed_secret(self):
+        findings = scan_yaml_keyed_secrets("api_key: supersecretvalue123\n")
+        self.assertTrue(findings)
+
+    def test_ignores_yaml_keyed_placeholder(self):
+        findings = scan_yaml_keyed_secrets("password: changeme\n")
+        self.assertEqual(findings, [])
+
+    def test_ignores_prose_with_colon(self):
+        findings = scan_yaml_keyed_secrets("Use the password: vault for access.\n")
         self.assertEqual(findings, [])
 
     def test_clean_text_ok(self):
@@ -325,7 +337,21 @@ class TestPromotePathSafety(unittest.TestCase):
         rc = cli_main(["promote", "evil-link.md"])
         self.assertNotEqual(rc, 0)
         self.assertEqual(self.outside.read_bytes(), b"OUTSIDE_SECRET_CONTENT")
+        self.assertTrue(link.is_symlink())
         self.assertFalse((self.root / "memory/decisions").joinpath("evil-link.md").exists())
+
+    def test_reject_inbox_symlink_to_inbox_file(self):
+        target = inbox_dir(self.root) / "real-target.md"
+        shutil.copy(self.inbox_file, target)
+        target_bytes = target.read_bytes()
+        self.inbox_file.unlink()
+        link = inbox_dir(self.root) / "alias-link.md"
+        link.symlink_to(target)
+        rc = cli_main(["promote", "alias-link.md"])
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_bytes(), target_bytes)
+        self.assertFalse((self.root / "memory/decisions/alias-link.md").exists())
 
     def test_resolve_inbox_rejects_nested(self):
         nested = inbox_dir(self.root) / "nested"
@@ -334,6 +360,73 @@ class TestPromotePathSafety(unittest.TestCase):
         nested_file.write_text("# N\n\nBody.\n")
         with self.assertRaises(PathSafetyError):
             resolve_inbox_file(self.root, "inbox/nested/nested.md")
+
+
+class TestSymlinkScanner(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        scaffold_repo(self.root, with_index=True)
+        os.chdir(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _write_canonical(self, rid: str, body_extra: str = "") -> Path:
+        meta = {
+            "id": rid,
+            "type": "decision",
+            "status": "active",
+            "confidence": "high",
+            "source": "test",
+            "sensitivity": "internal",
+            "created": "2026-07-28",
+            "updated": "2026-07-28",
+            "review_after": "2027-01-28",
+            "supersedes": [],
+            "tags": [],
+        }
+        path = self.root / f"memory/decisions/{rid}.md"
+        write_memory_file(
+            MemoryRecord(
+                path=path,
+                meta=meta,
+                body=f"# Title\n\nVisible content. {body_extra}\n",
+            )
+        )
+        return path
+
+    def test_doctor_reports_canonical_symlink(self):
+        real = self._write_canonical("real-record")
+        link = self.root / "memory/decisions/evil-link.md"
+        if link.exists():
+            link.unlink()
+        link.symlink_to(real)
+        result = run_kb("doctor", cwd=self.root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr.lower())
+
+    def test_search_ignores_symlink_outside_content(self):
+        outside = self.root / "outside-secret.md"
+        outside.write_text("# Outside\n\nUNIQUE_OUTSIDE_SYMLINK_TOKEN_xyz\n")
+        link = self.root / "memory/decisions/outside-link.md"
+        link.symlink_to(outside)
+        hits = search_records(self.root, "UNIQUE_OUTSIDE_SYMLINK_TOKEN_xyz")
+        self.assertEqual(hits, [])
+        self.assertEqual(outside.read_text(), "# Outside\n\nUNIQUE_OUTSIDE_SYMLINK_TOKEN_xyz\n")
+
+
+class TestAtomicWrite(unittest.TestCase):
+    def test_fsync_parent_after_replace(self):
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            target = tmp / "out.md"
+            with patch("kb_lib.lock.os.fsync") as mock_fsync:
+                atomic_write(target, "hello")
+            self.assertGreaterEqual(mock_fsync.call_count, 2)
+            self.assertEqual(target.read_text(), "hello")
+        finally:
+            shutil.rmtree(tmp)
 
 
 class TestPromoteRollback(unittest.TestCase):

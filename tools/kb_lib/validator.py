@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from .parser import REQUIRED_FIELDS, MemoryRecord, parse_memory_file
+from .path_safety import is_safe_memory_path
 from .paths import (
     CANONICAL_STATUSES,
     CATEGORY_TO_TYPE,
@@ -20,7 +21,8 @@ from .paths import (
     TYPE_TO_CATEGORY,
     inbox_dir,
     index_path,
-    iter_memory_files,
+    iter_memory_paths,
+    memory_dir,
     schema_path,
 )
 from .secrets import scan_secrets
@@ -181,12 +183,29 @@ def validate_record_meta(record: MemoryRecord, report: ValidationReport, *, inbo
         report.add("error", path, f"forbidden content pattern: {finding}")
 
 
+def scan_symlink_entries(root: Path, report: ValidationReport) -> None:
+    root = root.resolve()
+    for container in (memory_dir(root), inbox_dir(root)):
+        if container.exists() and container.is_symlink():
+            report.add("error", str(container), "symlink directory not allowed")
+
+    for path in iter_memory_paths(root, include_inbox=True):
+        if path.is_symlink():
+            report.add("error", str(path), "symlink entry not allowed")
+
+
 def load_all_records(root: Path) -> tuple[list[MemoryRecord], ValidationReport]:
     report = ValidationReport()
+    scan_symlink_entries(root, report)
     records: list[MemoryRecord] = []
-    for path in iter_memory_files(root, include_inbox=True):
+    root = root.resolve()
+    for path in iter_memory_paths(root, include_inbox=True):
+        if path.suffix != ".md":
+            continue
+        if path.is_symlink() or not is_safe_memory_path(root, path):
+            continue
         try:
-            record = parse_memory_file(path)
+            record = parse_memory_file(path, root=root)
         except Exception as exc:  # noqa: BLE001 - collect all parse errors
             report.add("error", str(path), f"parse error: {exc}")
             continue

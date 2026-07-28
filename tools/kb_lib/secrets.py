@@ -21,6 +21,14 @@ ASSIGNMENT_LINE_RE = re.compile(
     re.MULTILINE,
 )
 
+# YAML-style keyed secrets at line start (frontmatter or body)
+YAML_KEYED_SECRET_RE = re.compile(
+    r"^(?!#)(?:-\s+)?"
+    r"(?P<key>api[_-]?key|password|passwd|secret|token|webhook[_-]?url)"
+    r"\s*:\s*(?P<val>\S+)",
+    re.MULTILINE | re.IGNORECASE,
+)
+
 PLACEHOLDER_VALUE_RE = re.compile(
     r"^(?:"
     r"changeme|example|redacted|placeholder|none|null|undefined|"
@@ -78,12 +86,26 @@ def scan_assignment_lines(text: str) -> list[str]:
     return findings
 
 
+def scan_yaml_keyed_secrets(text: str) -> list[str]:
+    findings: list[str] = []
+    for match in YAML_KEYED_SECRET_RE.finditer(text):
+        key = match.group("key").lower()
+        val = match.group("val").strip().strip("'\"")
+        if _is_placeholder_value(val):
+            continue
+        if len(val) < 4:
+            continue
+        findings.append(f"yaml keyed secret {key}")
+    return findings
+
+
 def scan_secrets(text: str) -> list[str]:
     findings: list[str] = []
     for pattern, label in FORBIDDEN_PATTERNS:
         if pattern.search(text):
             findings.append(label)
     findings.extend(scan_assignment_lines(text))
+    findings.extend(scan_yaml_keyed_secrets(text))
     for pattern in TRANSCRIPT_MARKERS:
         if pattern.search(text):
             findings.append("raw transcript marker")
