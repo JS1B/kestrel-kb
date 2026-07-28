@@ -33,11 +33,13 @@ Create with `kb remember`. Always lands in `inbox/` with `status: candidate`.
 
 `kb promote inbox/<file>.md [--category <dir>]`
 
-1. Validates the candidate against schema invariants.
-2. Atomically moves to `memory/<category>/<id>.md`.
+1. **Path safety:** accepts only a direct `inbox/*.md` file inside this repo (no `..`, no paths outside `inbox/`, no symlinks). Bare filenames (`inbox/foo.md` or `foo.md`) are allowed when they resolve to a direct inbox child.
+2. `--category` must match the record metadata `type` mapping; the CLI never rewrites `type`.
+3. Validates the candidate against schema invariants.
+2. Atomically moves to `memory/<category>/<id>.md` (filename stem must equal `id`).
 3. Sets `status: active`, updates `updated` date.
-4. Regenerates `INDEX.md`.
-5. Refuses overwrite if canonical file exists.
+4. Regenerates `INDEX.md` under the repo-wide `.lock/kb.lock`.
+5. Refuses overwrite if canonical file exists; rolls back all record/index changes on validation failure.
 
 ## Supersede
 

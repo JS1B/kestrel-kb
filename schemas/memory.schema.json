@@ -111,6 +111,12 @@
       "candidate"
     ],
     "secretPatternsForbidden": true,
-    "indexMustMatchCanonical": true
+    "indexMustMatchCanonical": true,
+    "bodyRequiresH1": true,
+    "bodyRequiresMeaningfulContent": true,
+    "canonicalStemMatchesId": true,
+    "promoteInboxDirectChildOnly": true,
+    "promoteCategoryMustMatchType": true,
+    "repoLockFile": ".lock/kb.lock"
   }
 }

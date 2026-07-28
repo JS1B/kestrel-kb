@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .lock import atomic_write
 from .yaml_subset import YAMLParseError, dump_yaml_subset, parse_yaml_subset
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
@@ -94,5 +95,4 @@ def parse_memory_text(text: str, *, path: Path | None = None) -> MemoryRecord:
 
 def write_memory_file(record: MemoryRecord, path: Path | None = None) -> None:
     target = path or record.path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(record.to_markdown(), encoding="utf-8")
+    atomic_write(target, record.to_markdown())

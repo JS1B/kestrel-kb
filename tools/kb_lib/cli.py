@@ -9,8 +9,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .index import generate_index
-from .lock import LockTimeout, atomic_write, file_lock
+from .lock import LockTimeout, atomic_write, backup_file, repo_lock, restore_backups
 from .parser import MemoryRecord, parse_memory_file, write_memory_file
+from .path_safety import PathSafetyError, resolve_inbox_file
 from .paths import (
     INBOX_STATUS,
     TYPE_TO_CATEGORY,
@@ -18,10 +19,15 @@ from .paths import (
     find_root,
     inbox_dir,
     index_path,
-    lock_dir,
 )
 from .search import format_hits, search_records
-from .validator import load_all_records, validate_repository
+from .validator import (
+    ValidationReport,
+    load_all_records,
+    validate_cross_record,
+    validate_record_meta,
+    validate_repository,
+)
 
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
@@ -30,6 +36,12 @@ def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     slug = re.sub(r"-{2,}", "-", slug)
     return slug or "untitled"
+
+
+def _regenerate_index(root: Path) -> None:
+    records, _ = load_all_records(root)
+    canonical = [r for r in records if not r.path.is_relative_to(inbox_dir(root))]
+    atomic_write(index_path(root), generate_index(root, canonical))
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
@@ -45,13 +57,9 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 
 def cmd_index(_args: argparse.Namespace) -> int:
     root = find_root()
-    lock = lock_dir(root) / "index.lock"
     try:
-        with file_lock(lock):
-            records, _ = load_all_records(root)
-            canonical = [r for r in records if not r.path.is_relative_to(inbox_dir(root))]
-            content = generate_index(root, canonical)
-            atomic_write(index_path(root), content)
+        with repo_lock(root):
+            _regenerate_index(root)
     except LockTimeout as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -62,49 +70,48 @@ def cmd_index(_args: argparse.Namespace) -> int:
 def cmd_search(args: argparse.Namespace) -> int:
     root = find_root()
     hits = search_records(root, args.query)
-    print(format_hits(hits))
+    print(format_hits(hits, root))
     return 0
 
 
 def cmd_remember(args: argparse.Namespace) -> int:
     root = find_root()
-    lock = lock_dir(root) / "inbox.lock"
     today = date.today().isoformat()
     review = (date.today() + timedelta(days=180)).isoformat()
-    base_slug = _slugify(args.title)
-    record_id = base_slug
-    existing, _ = load_all_records(root)
-    existing_ids = {r.id for r in existing}
-    suffix = 0
-    while record_id in existing_ids:
-        suffix += 1
-        record_id = f"{base_slug}-{suffix}"
-
-    filename = f"{today}-{record_id}.md"
-    target = inbox_dir(root) / filename
-
-    meta = {
-        "id": record_id,
-        "type": args.type,
-        "status": INBOX_STATUS,
-        "confidence": args.confidence,
-        "source": args.source,
-        "sensitivity": args.sensitivity,
-        "created": today,
-        "updated": today,
-        "review_after": review,
-        "supersedes": [],
-        "tags": list(args.tag or []),
-    }
-    body = f"# {args.title}\n\n{args.text}\n"
-    record = MemoryRecord(path=target, meta=meta, body=body)
 
     try:
-        with file_lock(lock):
+        with repo_lock(root):
+            base_slug = _slugify(args.title)
+            existing, _ = load_all_records(root)
+            existing_ids = {r.id for r in existing}
+            record_id = base_slug
+            suffix = 0
+            while record_id in existing_ids:
+                suffix += 1
+                record_id = f"{base_slug}-{suffix}"
+
+            filename = f"{today}-{record_id}.md"
+            target = inbox_dir(root) / filename
+
+            meta = {
+                "id": record_id,
+                "type": args.type,
+                "status": INBOX_STATUS,
+                "confidence": args.confidence,
+                "source": args.source,
+                "sensitivity": args.sensitivity,
+                "created": today,
+                "updated": today,
+                "review_after": review,
+                "supersedes": [],
+                "tags": list(args.tag or []),
+            }
+            body = f"# {args.title}\n\n{args.text}\n"
+            record = MemoryRecord(path=target, meta=meta, body=body)
+
             if target.exists():
                 print(f"refuse: inbox file exists: {target}", file=sys.stderr)
                 return 1
-            from .validator import validate_record_meta, ValidationReport
 
             report = ValidationReport()
             validate_record_meta(record, report, inbox=True)
@@ -123,27 +130,30 @@ def cmd_remember(args: argparse.Namespace) -> int:
 
 def cmd_promote(args: argparse.Namespace) -> int:
     root = find_root()
-    inbox_path = Path(args.inbox_file)
-    if not inbox_path.is_absolute():
-        inbox_path = root / inbox_path
-    if not inbox_path.is_file():
-        print(f"not found: {inbox_path}", file=sys.stderr)
-        return 1
+    backups: list = []
 
-    lock = lock_dir(root) / "promote.lock"
     try:
-        with file_lock(lock):
-            record = parse_memory_file(inbox_path)
-            category = args.category or TYPE_TO_CATEGORY[record.type]
-            if category not in TYPE_TO_CATEGORY.values():
-                print(f"invalid category: {category}", file=sys.stderr)
+        with repo_lock(root):
+            try:
+                inbox_path = resolve_inbox_file(root, args.inbox_file)
+            except PathSafetyError as exc:
+                print(f"refuse: {exc}", file=sys.stderr)
                 return 1
-            expected_type = record.type
-            if args.category:
-                from .paths import CATEGORY_TO_TYPE
 
-                expected_type = CATEGORY_TO_TYPE.get(category, record.type)
-                record.meta["type"] = expected_type
+            inbox_backup = backup_file(inbox_path)
+            index_backup = backup_file(index_path(root))
+            backups = [inbox_backup, index_backup]
+
+            record = parse_memory_file(inbox_path)
+            category = TYPE_TO_CATEGORY[record.type]
+
+            if args.category and args.category != category:
+                print(
+                    f"refuse: --category {args.category!r} does not match "
+                    f"record type {record.type!r} (expected {category!r})",
+                    file=sys.stderr,
+                )
+                return 1
 
             dest = category_dir(root, category) / f"{record.id}.md"
             if dest.exists():
@@ -155,8 +165,6 @@ def cmd_promote(args: argparse.Namespace) -> int:
             record.meta["updated"] = today
             record.path = dest
 
-            from .validator import ValidationReport, validate_record_meta, validate_cross_record
-
             report = ValidationReport()
             validate_record_meta(record, report, inbox=False)
             if report.errors:
@@ -164,23 +172,27 @@ def cmd_promote(args: argparse.Namespace) -> int:
                     print(f"ERROR: {issue.path}: {issue.message}", file=sys.stderr)
                 return 1
 
-            # Write dest then remove inbox atomically-ish
             write_memory_file(record, dest)
             inbox_path.unlink()
 
             records, _ = load_all_records(root)
             validate_cross_record(records, report)
             if report.errors:
-                dest.unlink(missing_ok=True)
-                # restore inbox
-                record.meta["status"] = INBOX_STATUS
-                record.path = inbox_path
-                write_memory_file(record, inbox_path)
+                restore_backups(backups)
+                if dest.exists():
+                    dest.unlink(missing_ok=True)
                 for issue in report.errors:
                     print(f"ROLLBACK: {issue.path}: {issue.message}", file=sys.stderr)
                 return 1
 
-            atomic_write(index_path(root), generate_index(root))
+            try:
+                _regenerate_index(root)
+            except Exception as exc:  # noqa: BLE001
+                restore_backups(backups)
+                if dest.exists():
+                    dest.unlink(missing_ok=True)
+                print(f"ROLLBACK: index: {exc}", file=sys.stderr)
+                return 1
     except LockTimeout as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -192,11 +204,10 @@ def cmd_promote(args: argparse.Namespace) -> int:
 def cmd_supersede(args: argparse.Namespace) -> int:
     root = find_root()
     old_id, new_id = args.old_id, args.new_id
-    lock = lock_dir(root) / "supersede.lock"
 
     try:
-        with file_lock(lock):
-            records, report = load_all_records(root)
+        with repo_lock(root):
+            records, _ = load_all_records(root)
             by_id = {r.id: r for r in records}
             if old_id not in by_id:
                 print(f"unknown old id: {old_id}", file=sys.stderr)
@@ -207,9 +218,11 @@ def cmd_supersede(args: argparse.Namespace) -> int:
             old_record = by_id[old_id]
             new_record = by_id[new_id]
 
-            # Backup for rollback
-            old_backup = old_record.meta.copy()
-            new_backup = new_record.meta.copy()
+            backups = [
+                backup_file(old_record.path),
+                backup_file(new_record.path),
+                backup_file(index_path(root)),
+            ]
 
             today = date.today().isoformat()
             old_record.meta["status"] = "superseded"
@@ -220,30 +233,39 @@ def cmd_supersede(args: argparse.Namespace) -> int:
             new_record.meta["supersedes"] = sorted(supersedes)
             new_record.meta["updated"] = today
 
-            from .validator import ValidationReport, validate_cross_record, validate_record_meta
-
             check = ValidationReport()
-            inbox = old_record.path.is_relative_to(inbox_dir(root))
-            validate_record_meta(old_record, check, inbox=inbox)
-            validate_record_meta(new_record, check, inbox=new_record.path.is_relative_to(inbox_dir(root)))
+            validate_record_meta(
+                old_record,
+                check,
+                inbox=old_record.path.is_relative_to(inbox_dir(root)),
+            )
+            validate_record_meta(
+                new_record,
+                check,
+                inbox=new_record.path.is_relative_to(inbox_dir(root)),
+            )
             validate_cross_record(records, check)
 
-            # cycle check with updated graph
-            if any(i.level == "error" and "cycle" in i.message for i in check.issues):
+            if check.errors:
                 for issue in check.errors:
                     print(f"ERROR: {issue.path}: {issue.message}", file=sys.stderr)
                 return 1
 
-            if check.errors:
-                old_record.meta = old_backup
-                new_record.meta = new_backup
-                for issue in check.errors:
-                    print(f"ROLLBACK: {issue.path}: {issue.message}", file=sys.stderr)
-                return 1
-
             write_memory_file(old_record)
             write_memory_file(new_record)
-            atomic_write(index_path(root), generate_index(root))
+
+            try:
+                _regenerate_index(root)
+                post_report = validate_repository(root, check_index=True)
+                if not post_report.ok:
+                    restore_backups(backups)
+                    for issue in post_report.errors:
+                        print(f"ROLLBACK: {issue.path}: {issue.message}", file=sys.stderr)
+                    return 1
+            except Exception as exc:  # noqa: BLE001
+                restore_backups(backups)
+                print(f"ROLLBACK: {exc}", file=sys.stderr)
+                return 1
     except LockTimeout as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -27,6 +27,7 @@ from .secrets import scan_secrets
 
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+H1_LINE_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 
 
 @dataclass
@@ -61,6 +62,28 @@ def _parse_iso_date(value: str, field_name: str, path: str, report: ValidationRe
     except ValueError:
         report.add("error", path, f"{field_name} is not a valid date: {value!r}")
         return None
+
+
+def validate_record_body(record: MemoryRecord, report: ValidationReport) -> None:
+    path = str(record.path)
+    h1_matches = H1_LINE_RE.findall(record.body)
+    if not h1_matches:
+        report.add("error", path, "body must include one Markdown H1 title (# ...)")
+    elif len(h1_matches) > 1:
+        report.add("error", path, "body must have exactly one H1 title")
+    else:
+        title_text = h1_matches[0].strip()
+        if not title_text:
+            report.add("error", path, "H1 title must not be empty")
+
+    remainder_lines: list[str] = []
+    for line in record.body.splitlines():
+        if H1_LINE_RE.match(line):
+            continue
+        remainder_lines.append(line)
+    remainder = "\n".join(remainder_lines).strip()
+    if not remainder or len(remainder) < 3:
+        report.add("error", path, "body must have non-empty meaningful content after H1")
 
 
 def validate_record_meta(record: MemoryRecord, report: ValidationReport, *, inbox: bool) -> None:
@@ -144,6 +167,14 @@ def validate_record_meta(record: MemoryRecord, report: ValidationReport, *, inbo
                 path,
                 f"type {meta.get('type')!r} does not match directory {parent!r}",
             )
+        if record_id and record.path.stem != record_id:
+            report.add(
+                "error",
+                path,
+                f"canonical filename stem must match id ({record.path.stem!r} != {record_id!r})",
+            )
+
+    validate_record_body(record, report)
 
     secrets = scan_secrets(record.to_markdown())
     for finding in secrets:

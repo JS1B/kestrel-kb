@@ -1,22 +1,27 @@
 """Tests for Kestrel KB tooling."""
 
+from __future__ import annotations
+
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 
 from kb_lib.index import generate_index  # noqa: E402
 from kb_lib.parser import MemoryRecord, parse_memory_text, write_memory_file  # noqa: E402
+from kb_lib.path_safety import PathSafetyError, resolve_inbox_file  # noqa: E402
 from kb_lib.paths import find_root, inbox_dir  # noqa: E402
-from kb_lib.search import search_records  # noqa: E402
-from kb_lib.secrets import scan_secrets  # noqa: E402
-from kb_lib.validator import validate_repository  # noqa: E402
+from kb_lib.search import format_hits, search_records  # noqa: E402
+from kb_lib.secrets import scan_assignment_lines, scan_secrets  # noqa: E402
+from kb_lib.lock import kb_lock_path  # noqa: E402
 from kb_lib.yaml_subset import dump_yaml_subset, parse_yaml_subset  # noqa: E402
 from kb_lib.cli import main as cli_main  # noqa: E402
 
@@ -31,6 +36,27 @@ def run_kb(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+def scaffold_repo(root: Path, *, with_index: bool = False) -> None:
+    for rel in [
+        "schemas/memory.schema.json",
+        "memory/preferences",
+        "memory/decisions",
+        "memory/capabilities",
+        "memory/runbooks",
+        "memory/constraints",
+        "inbox",
+    ]:
+        src = REPO_ROOT / rel
+        dst = root / rel
+        if src.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(src, dst)
+        else:
+            dst.mkdir(parents=True, exist_ok=True)
+    if with_index:
+        shutil.copy(REPO_ROOT / "INDEX.md", root / "INDEX.md")
 
 
 class TestYamlSubset(unittest.TestCase):
@@ -78,9 +104,17 @@ class TestSecrets(unittest.TestCase):
         findings = scan_secrets("-----BEGIN PRIVATE KEY-----\nMIIE")
         self.assertTrue(any("private key" in f for f in findings))
 
-    def test_detects_inline_credential(self):
-        findings = scan_secrets("api_key: supersecretvalue123")
+    def test_detects_env_assignment(self):
+        findings = scan_assignment_lines("API_KEY=supersecretvalue123\n")
         self.assertTrue(findings)
+
+    def test_ignores_placeholder_assignment(self):
+        findings = scan_assignment_lines("MY_API_KEY=changeme\n")
+        self.assertEqual(findings, [])
+
+    def test_ignores_export_placeholder(self):
+        findings = scan_assignment_lines("export DATABASE_URL=example\n")
+        self.assertEqual(findings, [])
 
     def test_clean_text_ok(self):
         self.assertEqual(scan_secrets("operational policy only"), [])
@@ -102,10 +136,19 @@ class TestSearch(unittest.TestCase):
         ids = [h.record.id for h in hits]
         self.assertIn("github-primary-forgejo-secondary", ids)
 
+    def test_search_relative_paths(self):
+        root = find_root(REPO_ROOT)
+        hits = search_records(root, "forgejo")
+        self.assertTrue(hits)
+        output = format_hits(hits, root)
+        self.assertNotIn(str(root), output)
+        self.assertIn("memory/decisions/", output)
+
     def test_search_smoke_cli(self):
         result = run_kb("search", "sops age")
         self.assertEqual(result.returncode, 0)
         self.assertIn("secrets-policy-sops-age", result.stdout)
+        self.assertIn("memory/constraints/", result.stdout)
 
 
 class TestValidator(unittest.TestCase):
@@ -118,22 +161,7 @@ class TestRememberPromote(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp)
-        for rel in [
-            "schemas/memory.schema.json",
-            "memory/preferences",
-            "memory/decisions",
-            "memory/capabilities",
-            "memory/runbooks",
-            "memory/constraints",
-            "inbox",
-        ]:
-            src = REPO_ROOT / rel
-            dst = self.root / rel
-            if src.is_file():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(src, dst)
-            else:
-                dst.mkdir(parents=True, exist_ok=True)
+        scaffold_repo(self.root)
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -183,12 +211,36 @@ class TestRememberPromote(unittest.TestCase):
             ]
         )
         inbox_file = next(inbox_dir(self.root).glob("*.md"))
-        rc = cli_main(["promote", str(inbox_file)])
+        rel = inbox_file.relative_to(self.root).as_posix()
+        rc = cli_main(["promote", rel])
         self.assertEqual(rc, 0)
         self.assertFalse(inbox_file.exists())
         canonical = self.root / "memory/decisions/promote-me.md"
         self.assertTrue(canonical.is_file())
         self.assertIn("status: active", canonical.read_text())
+
+    def test_promote_category_mismatch_rejected(self):
+        os.chdir(self.root)
+        cli_main(
+            [
+                "remember",
+                "--type",
+                "decision",
+                "--title",
+                "Cat Mismatch",
+                "--source",
+                "unit test",
+                "--confidence",
+                "high",
+                "--sensitivity",
+                "internal",
+                "Body text.",
+            ]
+        )
+        inbox_file = next(inbox_dir(self.root).glob("*.md"))
+        rc = cli_main(["promote", inbox_file.name, "--category", "preferences"])
+        self.assertNotEqual(rc, 0)
+        self.assertTrue(inbox_file.exists())
 
     def test_collision_safe_slug(self):
         os.chdir(self.root)
@@ -217,23 +269,122 @@ class TestRememberPromote(unittest.TestCase):
         self.assertEqual(len(ids), 2)
 
 
+class TestPromotePathSafety(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        scaffold_repo(self.root)
+        self.outside = Path(self.tmp) / "outside.md"
+        self.outside.write_bytes(b"OUTSIDE_SECRET_CONTENT")
+        os.chdir(self.root)
+        cli_main(
+            [
+                "remember",
+                "--type",
+                "decision",
+                "--title",
+                "Safe Candidate",
+                "--source",
+                "unit test",
+                "--confidence",
+                "high",
+                "--sensitivity",
+                "internal",
+                "Safe body.",
+            ]
+        )
+        self.inbox_file = next(inbox_dir(self.root).glob("*.md"))
+        self.inbox_bytes = self.inbox_file.read_bytes()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_reject_external_absolute(self):
+        rc = cli_main(["promote", str(self.outside)])
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.outside.read_bytes(), b"OUTSIDE_SECRET_CONTENT")
+        self.assertEqual(self.inbox_file.read_bytes(), self.inbox_bytes)
+
+    def test_reject_traversal(self):
+        rc = cli_main(["promote", "../../outside.md"])
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.outside.read_bytes(), b"OUTSIDE_SECRET_CONTENT")
+
+    def test_reject_non_inbox_relative(self):
+        canonical = self.root / "memory/decisions/fake.md"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_text("# Fake\n\nBody.\n")
+        rc = cli_main(["promote", "memory/decisions/fake.md"])
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.inbox_file.read_bytes(), self.inbox_bytes)
+
+    def test_reject_inbox_symlink_to_outside(self):
+        self.inbox_file.unlink()
+        link = inbox_dir(self.root) / "evil-link.md"
+        link.symlink_to(self.outside)
+        rc = cli_main(["promote", "evil-link.md"])
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.outside.read_bytes(), b"OUTSIDE_SECRET_CONTENT")
+        self.assertFalse((self.root / "memory/decisions").joinpath("evil-link.md").exists())
+
+    def test_resolve_inbox_rejects_nested(self):
+        nested = inbox_dir(self.root) / "nested"
+        nested.mkdir()
+        nested_file = nested / "nested.md"
+        nested_file.write_text("# N\n\nBody.\n")
+        with self.assertRaises(PathSafetyError):
+            resolve_inbox_file(self.root, "inbox/nested/nested.md")
+
+
+class TestPromoteRollback(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        scaffold_repo(self.root, with_index=True)
+        os.chdir(self.root)
+        cli_main(
+            [
+                "remember",
+                "--type",
+                "decision",
+                "--title",
+                "Rollback Test",
+                "--source",
+                "unit test",
+                "--confidence",
+                "high",
+                "--sensitivity",
+                "internal",
+                "Rollback body.",
+            ]
+        )
+        self.inbox_file = next(inbox_dir(self.root).glob("*.md"))
+        self.inbox_bytes = self.inbox_file.read_bytes()
+        self.index_bytes = (self.root / "INDEX.md").read_bytes()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_promote_rollback_on_cross_record_failure(self):
+        rel = self.inbox_file.relative_to(self.root).as_posix()
+
+        def fail_validate(records, report):
+            report.add("error", "injected", "forced failure")
+
+        with patch("kb_lib.cli.validate_cross_record", side_effect=fail_validate):
+            rc = cli_main(["promote", rel])
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(self.inbox_file.read_bytes(), self.inbox_bytes)
+        self.assertFalse((self.root / "memory/decisions/rollback-test.md").exists())
+        self.assertEqual((self.root / "INDEX.md").read_bytes(), self.index_bytes)
+
+
 class TestSupersede(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.root = Path(self.tmp)
-        for rel in [
-            "schemas/memory.schema.json",
-            "memory/decisions",
-            "inbox",
-            "INDEX.md",
-        ]:
-            src = REPO_ROOT / rel
-            dst = self.root / rel
-            if src.is_file():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(src, dst)
-            else:
-                dst.mkdir(parents=True, exist_ok=True)
+        scaffold_repo(self.root, with_index=True)
 
         meta = {
             "id": "old-policy",
@@ -259,6 +410,9 @@ class TestSupersede(unittest.TestCase):
                 )
             )
         run_kb("index", cwd=self.root)
+        self.old_bytes = (self.root / "memory/decisions/old-policy.md").read_bytes()
+        self.new_bytes = (self.root / "memory/decisions/new-policy.md").read_bytes()
+        self.index_bytes = (self.root / "INDEX.md").read_bytes()
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -274,24 +428,88 @@ class TestSupersede(unittest.TestCase):
 
     def test_supersede_cycle_rejected(self):
         os.chdir(self.root)
-        # new already exists; make new supersede old first
         cli_main(["supersede", "old-policy", "new-policy"])
-        # Attempt to supersede new with old (would cycle)
         old_path = self.root / "memory/decisions/old-policy.md"
-        new_path = self.root / "memory/decisions/new-policy.md"
-        # Manually set old to active and add new to its supersedes to force cycle
         old_text = old_path.read_text().replace("status: superseded", "status: active")
         old_path.write_text(old_text)
         rc = cli_main(["supersede", "new-policy", "old-policy"])
         self.assertNotEqual(rc, 0)
 
+    def test_supersede_rollback_on_post_validation_failure(self):
+        os.chdir(self.root)
+
+        class FakeReport:
+            ok = False
+
+            @property
+            def errors(self):
+                return [type("E", (), {"path": "x", "message": "injected"})()]
+
+        with patch("kb_lib.cli.validate_repository", return_value=FakeReport()):
+            rc = cli_main(["supersede", "old-policy", "new-policy"])
+
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(
+            (self.root / "memory/decisions/old-policy.md").read_bytes(),
+            self.old_bytes,
+        )
+        self.assertEqual(
+            (self.root / "memory/decisions/new-policy.md").read_bytes(),
+            self.new_bytes,
+        )
+        self.assertEqual((self.root / "INDEX.md").read_bytes(), self.index_bytes)
+
+
+class TestConcurrentRemember(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        scaffold_repo(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_concurrent_same_title_unique_ids(self):
+        os.chdir(self.root)
+        errors: list[int] = []
+
+        def worker():
+            rc = cli_main(
+                [
+                    "remember",
+                    "--type",
+                    "preference",
+                    "--title",
+                    "Concurrent Title",
+                    "--source",
+                    "unit test",
+                    "--confidence",
+                    "low",
+                    "--sensitivity",
+                    "public",
+                    "concurrent body",
+                ]
+            )
+            errors.append(rc)
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertTrue(all(rc == 0 for rc in errors), errors)
+        ids = set()
+        for f in inbox_dir(self.root).glob("*.md"):
+            ids.add(parse_memory_text(f.read_text(), path=f).id)
+        self.assertEqual(len(ids), 6)
+
 
 class TestConcurrency(unittest.TestCase):
-    def test_lock_file_used_by_index(self):
+    def test_repo_lock_file(self):
         result = run_kb("index")
         self.assertEqual(result.returncode, 0)
-        lock_dir = REPO_ROOT / ".lock"
-        self.assertTrue(lock_dir.is_dir())
+        self.assertTrue(kb_lock_path(REPO_ROOT).parent.is_dir())
 
 
 class TestPyCompile(unittest.TestCase):

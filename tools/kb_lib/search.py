@@ -77,12 +77,15 @@ def search_records(root: Path, query: str) -> list[SearchHit]:
     return hits
 
 
-def format_hits(hits: list[SearchHit]) -> str:
+def format_hits(hits: list[SearchHit], root: Path) -> str:
     if not hits:
         return "No matches."
     lines: list[str] = []
     for hit in hits:
-        rel = hit.record.path.as_posix()
+        try:
+            rel = hit.record.path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = hit.record.path.as_posix()
         lines.append(
             f"{hit.record.id}\t{hit.record.type}\t{hit.record.title}\t{rel}"
         )

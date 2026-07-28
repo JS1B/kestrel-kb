@@ -16,6 +16,8 @@ Kestrel's **operational memory** — confirmed preferences, decisions, capabilit
 4. Updates: `./tools/kb supersede OLD_ID NEW_ID` — never silently rewrite canonical records.
 5. Before commit handoff: `./tools/kb index && ./tools/kb doctor`.
 
+Mutating commands share a repo-wide lock at `.lock/kb.lock`. `promote` accepts only direct `inbox/*.md` files inside this repo.
+
 See [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/DERIVED-GRAPH.md](docs/DERIVED-GRAPH.md).
 
 ## Commands
