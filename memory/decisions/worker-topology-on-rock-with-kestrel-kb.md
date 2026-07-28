@@ -5,7 +5,7 @@ id: worker-topology-on-rock-with-kestrel-kb
 review_after: 2027-01-24
 sensitivity: internal
 source: user-confirmed and live-verified 2026-07-28; homelab infrastructure/cursor-worker/
-status: active
+status: superseded
 supersedes:
   - worker-topology-rock
 tags:
