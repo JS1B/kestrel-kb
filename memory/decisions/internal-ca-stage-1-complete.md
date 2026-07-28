@@ -5,7 +5,7 @@ id: internal-ca-stage-1-complete
 review_after: 2027-01-25
 sensitivity: internal
 source: user-requested 2026-07-29; verified live HTTPS + user trust on rock
-status: active
+status: superseded
 supersedes:
   - internal-ca-stage-1
 tags:
