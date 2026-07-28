@@ -1,0 +1,23 @@
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+
+# Lock files (runtime)
+.lock/
+
+# Never commit decrypted secrets or scratch
+*.dec
+secrets/

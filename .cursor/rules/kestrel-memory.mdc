@@ -1,0 +1,42 @@
+---
+description: Kestrel operational memory discipline for Cursor sessions
+alwaysApply: true
+---
+
+# Kestrel Memory
+
+This repo (`kestrel-kb`) is Kestrel's **operational memory** — separate from Piotr's `self-model-kb`.
+
+## Session start
+
+1. Read `INDEX.md` only (not every memory file).
+2. Run `./tools/kb search <task-relevant terms>` before loading records.
+3. Never load the entire KB reflexively.
+
+## What belongs here
+
+- Confirmed preferences, decisions, capabilities, constraints, runbooks.
+- Concise operational facts with provenance (`source` field).
+
+## What never belongs here
+
+- Secrets, credentials, tokens, webhook URLs.
+- Raw transcripts, chat dumps, private file contents.
+- Notification message bodies or delivery payloads.
+
+## Writing memory
+
+- Explicit user statements → `kb remember` (inbox candidate).
+- Inferred or ambiguous facts → inbox until confirmed.
+- Never silently edit canonical records → `kb supersede OLD_ID NEW_ID`.
+- Promote only after validation: `kb promote inbox/<file>.md`.
+
+## Handoff
+
+Before commit: `./tools/kb index && ./tools/kb doctor` (both must pass).
+
+## Related repos
+
+- `~/homelab` — infrastructure and services
+- `~/ai-workspace/self-model-kb` — Piotr evidence/profile (not operational memory)
+- This repo — Kestrel operational memory

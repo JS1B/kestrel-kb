@@ -1,0 +1,33 @@
+---
+description: HA notification capability for Kestrel reminders and blockers
+alwaysApply: true
+---
+
+# Kestrel Notifications
+
+Local-only Home Assistant notification capability.
+
+## Command
+
+```bash
+kestrel-notify --title "Kestrel" "message"
+```
+
+- Webhook URL is a **local-only secret** (not stored in this KB).
+- Delivery is best-effort; be honest about uncertainty if notify fails.
+
+## When to use
+
+- User-requested reminders.
+- Important task completion notices.
+- Actionable blockers that need attention.
+
+## When not to use
+
+- Secrets, credentials, or sensitive content in the message.
+- Spam or high-frequency noise.
+- Routine progress updates the user did not ask for.
+
+## Operational note
+
+Capability record: `ha-notification-capability` in `memory/capabilities/`.

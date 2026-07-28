@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kestrel.local/schemas/memory.schema.json",
+  "title": "Kestrel Memory Record",
+  "description": "Canonical metadata contract for Kestrel operational memory Markdown records.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "status",
+    "confidence",
+    "source",
+    "sensitivity",
+    "created",
+    "updated",
+    "review_after",
+    "supersedes",
+    "tags"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
+      "description": "Stable slug identifier; lowercase alphanumeric and hyphens."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "preference",
+        "decision",
+        "capability",
+        "runbook",
+        "constraint"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "active",
+        "superseded"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concise provenance (e.g. user-confirmed date, homelab path)."
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted"
+      ]
+    },
+    "created": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "updated": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "review_after": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+      },
+      "uniqueItems": true
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+      },
+      "uniqueItems": true
+    }
+  },
+  "categoryMap": {
+    "preference": "preferences",
+    "decision": "decisions",
+    "capability": "capabilities",
+    "runbook": "runbooks",
+    "constraint": "constraints"
+  },
+  "invariants": {
+    "canonicalStatus": [
+      "active",
+      "superseded"
+    ],
+    "inboxStatus": [
+      "candidate"
+    ],
+    "secretPatternsForbidden": true,
+    "indexMustMatchCanonical": true
+  }
+}
