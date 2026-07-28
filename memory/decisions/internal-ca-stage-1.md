@@ -5,14 +5,14 @@ id: internal-ca-stage-1
 review_after: 2027-01-28
 sensitivity: internal
 source: user-confirmed 2026-07-28; homelab TLS/CA planning
-status: active
+status: superseded
 supersedes: []
 tags:
   - tls
   - ca
   - homelab
 type: decision
-updated: 2026-07-28
+updated: 2026-07-29
 ---
 # Internal CA stage 1
 
