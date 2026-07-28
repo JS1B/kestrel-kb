@@ -5,7 +5,7 @@ id: worker-topology-rock
 review_after: 2027-01-28
 sensitivity: internal
 source: user-confirmed 2026-07-28; ~/ai-workspace layout
-status: active
+status: superseded
 supersedes: []
 tags:
   - topology

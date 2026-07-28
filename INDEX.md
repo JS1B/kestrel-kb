@@ -27,7 +27,8 @@ Regenerate: `./tools/kb index`
 | github-primary-forgejo-secondary | active | high | GitHub primary, Forgejo secondary | `memory/decisions/github-primary-forgejo-secondary.md` | 2027-01-28 |
 | internal-ca-stage-1 | active | high | Internal CA stage 1 | `memory/decisions/internal-ca-stage-1.md` | 2027-01-28 |
 | roadmap-markdown-first | active | high | Roadmap: Markdown and search first | `memory/decisions/roadmap-markdown-first.md` | 2027-01-28 |
-| worker-topology-rock | active | high | Worker topology on rock | `memory/decisions/worker-topology-rock.md` | 2027-01-28 |
+| worker-topology-on-rock-with-kestrel-kb | active | high | Worker topology on rock with Kestrel KB | `memory/decisions/worker-topology-on-rock-with-kestrel-kb.md` | 2027-01-24 |
+| worker-topology-rock | superseded | high | Worker topology on rock | `memory/decisions/worker-topology-rock.md` | 2027-01-28 |
 
 ## preferences
 
