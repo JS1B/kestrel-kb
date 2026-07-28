@@ -304,3 +304,30 @@ def validate_repository(root: Path, *, check_index: bool = True) -> ValidationRe
     if check_index:
         validate_index_freshness(root, records, report)
     return report
+
+
+def collect_overdue_review_warnings(
+    records: list[MemoryRecord],
+    today: date | None = None,
+) -> list[ValidationIssue]:
+    """Return deterministic warnings for active records past review_after."""
+    ref = today or date.today()
+    warnings: list[ValidationIssue] = []
+    for record in sorted(records, key=lambda r: (r.id, str(r.path))):
+        if record.status != "active":
+            continue
+        raw = record.meta.get("review_after")
+        if not isinstance(raw, str):
+            continue
+        review = _parse_iso_date(raw, "review_after", str(record.path), ValidationReport())
+        if review is None:
+            continue
+        if review < ref:
+            warnings.append(
+                ValidationIssue(
+                    "warning",
+                    str(record.path),
+                    f"review_after {raw} is overdue (today={ref.isoformat()})",
+                )
+            )
+    return warnings

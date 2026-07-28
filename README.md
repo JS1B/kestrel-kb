@@ -10,7 +10,7 @@ Kestrel's **operational memory** — confirmed preferences, decisions, capabilit
 
 ## Workflow
 
-1. Session start: read `INDEX.md`, then `./tools/kb search <query>` for task relevance.
+1. Session start: `./tools/kb session-check`, then read `INDEX.md`, then `./tools/kb search <query>` for task relevance.
 2. New facts: `./tools/kb remember ...` → `inbox/` (candidate).
 3. Validate and promote: `./tools/kb promote inbox/<file>.md`.
 4. Updates: `./tools/kb supersede OLD_ID NEW_ID` — never silently rewrite canonical records.
@@ -23,7 +23,9 @@ See [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/DERIVED-GRAPH.md](docs/DERIVE
 ## Commands
 
 ```bash
+./tools/kb session-check                 # validate workspace + sibling repos (no mutation)
 ./tools/kb doctor                         # validate all records + index freshness
+./tools/kb doctor --strict-review         # fail on overdue review_after warnings
 ./tools/kb index                          # regenerate INDEX.md
 ./tools/kb search QUERY                   # deterministic metadata/body search
 ./tools/kb remember --type ... --title ... --source ... \

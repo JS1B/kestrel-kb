@@ -5,13 +5,36 @@ alwaysApply: true
 
 # Kestrel Memory
 
-This repo (`kestrel-kb`) is Kestrel's **operational memory** — separate from Piotr's `self-model-kb`.
+This repo (`kestrel-kb`) is Kestrel's **operational memory** and **primary workspace** on the `rock-ai` worker.
+
+## Repo map
+
+| Path | Role | Worker |
+| --- | --- | --- |
+| `/home/radxa/ai-workspace/kestrel-kb` | Kestrel operational memory (this repo) | `rock-ai` (primary) |
+| `/home/radxa/ai-workspace/self-model-kb` | Piotr evidence, profile, claims | `rock-ai` |
+| `/home/radxa/ai-workspace/watchline` | Watchline product and development | `rock-ai` |
+| `/home/radxa/homelab` | Live infrastructure and services | separate `rock` worker |
+
+Cross-repo edits use each repo's own Git status, branch, and commit. **Never mix commits** across repos.
+
+## KB structure
+
+- `INDEX.md` — generated catalog; read first, not every record
+- `memory/{preferences,decisions,capabilities,runbooks,constraints}/` — canonical records
+- `inbox/` — unreviewed candidates
+- `schemas/memory.schema.json` — metadata contract
+- `tools/kb` — stdlib-only CLI (`doctor`, `index`, `search`, `remember`, `promote`, `supersede`, `session-check`)
+- `docs/` — workflow and derived views
+
+Test-only session-check path overrides require `KESTREL_KB_SESSION_CHECK_ALLOW_OVERRIDES=1` plus env vars or `--root`; production ignores ungated overrides.
 
 ## Session start
 
-1. Read `INDEX.md` only (not every memory file).
-2. Run `./tools/kb search <task-relevant terms>` before loading records.
-3. Never load the entire KB reflexively.
+1. Run `./tools/kb session-check`.
+2. Read `INDEX.md` only (not every memory file).
+3. Run `./tools/kb search <task-relevant terms>` before loading records.
+4. Open only matching records; never load the entire KB reflexively.
 
 ## What belongs here
 
@@ -35,8 +58,6 @@ This repo (`kestrel-kb`) is Kestrel's **operational memory** — separate from P
 
 Before commit: `./tools/kb index && ./tools/kb doctor` (both must pass).
 
-## Related repos
+## Notifications
 
-- `~/homelab` — infrastructure and services
-- `~/ai-workspace/self-model-kb` — Piotr evidence/profile (not operational memory)
-- This repo — Kestrel operational memory
+Use `kestrel-notify` only under the policy in `kestrel-notifications.mdc` (user-requested reminders, completion notices, actionable blockers — not secrets, spam, or routine progress).

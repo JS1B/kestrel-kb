@@ -29,6 +29,9 @@ Create with `kb remember`. Always lands in `inbox/` with `status: candidate`.
 - Secret/transcript pattern guardrails
 - Symlink entries under `memory/` or `inbox/` (reported as errors, never followed)
 - `INDEX.md` freshness
+- Overdue `review_after` on **active** records (warnings; use `doctor --strict-review` to fail)
+
+Superseded records are not flagged for overdue review.
 
 ## Promote
 
@@ -55,13 +58,14 @@ Create with `kb remember`. Always lands in `inbox/` with `status: candidate`.
 
 ## Session discipline
 
-1. Read `INDEX.md` only at session start.
-2. `kb search` for task-relevant records.
-3. Do not load the entire KB reflexively.
+1. Run `./tools/kb session-check`.
+2. Read `INDEX.md` only at session start.
+3. `kb search` for task-relevant records.
+4. Do not load the entire KB reflexively.
 
 ## Review
 
-Every record has `review_after` (ISO date). Stale policies should be reconfirmed or superseded.
+Every record has `review_after` (ISO date). Stale **active** policies should be reconfirmed or superseded. `kb doctor` prints deterministic warnings for overdue active records; `kb doctor --strict-review` exits nonzero when any are overdue.
 
 ## Pre-commit handoff
 

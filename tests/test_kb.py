@@ -9,6 +9,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager, redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +26,12 @@ from kb_lib.secrets import scan_assignment_lines, scan_secrets, scan_yaml_keyed_
 from kb_lib.lock import atomic_write, kb_lock_path  # noqa: E402
 from kb_lib.yaml_subset import dump_yaml_subset, parse_yaml_subset  # noqa: E402
 from kb_lib.cli import main as cli_main  # noqa: E402
+from kb_lib.session_check import (  # noqa: E402
+    ENV_ALLOW_OVERRIDES,
+    ENV_ROOT,
+    run_session_check,
+)
+from kb_lib.validator import collect_overdue_review_warnings, load_all_records  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +55,8 @@ def scaffold_repo(root: Path, *, with_index: bool = False) -> None:
         "memory/runbooks",
         "memory/constraints",
         "inbox",
+        "docs",
+        ".cursor/rules",
     ]:
         src = REPO_ROOT / rel
         dst = root / rel
@@ -55,8 +65,39 @@ def scaffold_repo(root: Path, *, with_index: bool = False) -> None:
             shutil.copy(src, dst)
         else:
             dst.mkdir(parents=True, exist_ok=True)
+    rule_src = REPO_ROOT / ".cursor/rules/kestrel-memory.mdc"
+    if rule_src.is_file():
+        shutil.copy(rule_src, root / ".cursor/rules/kestrel-memory.mdc")
+    kb_src = REPO_ROOT / "tools/kb"
+    kb_dst = root / "tools/kb"
+    kb_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(kb_src, kb_dst)
+    kb_dst.chmod(kb_dst.stat().st_mode | 0o111)
     if with_index:
         shutil.copy(REPO_ROOT / "INDEX.md", root / "INDEX.md")
+
+
+def init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+
+
+@contextmanager
+def env_override(**values: str | None):
+    saved: dict[str, str | None] = {}
+    for key, value in values.items():
+        saved[key] = os.environ.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
 
 
 class TestYamlSubset(unittest.TestCase):
@@ -609,6 +650,274 @@ class TestPyCompile(unittest.TestCase):
     def test_all_modules_compile(self):
         for path in (REPO_ROOT / "tools").rglob("*.py"):
             compile(path.read_text(), str(path), "exec")
+
+
+class TestSessionCheck(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.base = Path(self.tmp)
+        self.root = self.base / "kestrel-kb"
+        self.self_model = self.base / "self-model-kb"
+        self.watchline = self.base / "watchline"
+        self.homelab = self.base / "homelab"
+        scaffold_repo(self.root, with_index=True)
+        for sibling in (self.self_model, self.watchline, self.homelab):
+            sibling.mkdir()
+            init_git_repo(sibling)
+        run_kb("index", cwd=self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_session_check_success(self):
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertTrue(result.ok, result.failures)
+        self.assertIn("session-check: ok", result.lines[0])
+
+    def test_session_check_missing_schema(self):
+        (self.root / "schemas/memory.schema.json").unlink()
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("schema" in f.lower() for f in result.failures))
+
+    def test_session_check_rejects_symlink_root(self):
+        link = self.base / "kestrel-link"
+        link.symlink_to(self.root)
+        result = run_session_check(
+            root=link,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("symlink" in f.lower() for f in result.failures))
+
+    def test_session_check_rejects_non_git_sibling(self):
+        non_git = self.base / "watchline-bad"
+        non_git.mkdir()
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=non_git,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("git" in f.lower() for f in result.failures))
+
+    def test_session_check_rejects_empty_git_dir(self):
+        fake = self.base / "watchline-empty-git"
+        fake.mkdir()
+        (fake / ".git").mkdir()
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=fake,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("git" in f.lower() for f in result.failures))
+
+    def test_session_check_rejects_fake_git_file(self):
+        fake = self.base / "watchline-fake-git"
+        fake.mkdir()
+        (fake / ".git").write_text("not a gitdir\n")
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=fake,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("git" in f.lower() for f in result.failures))
+
+    def test_session_check_missing_root_reports_missing(self):
+        missing = self.base / "kestrel-kb-missing"
+        result = run_session_check(
+            root=missing,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("missing" in f.lower() for f in result.failures))
+        self.assertFalse(any("must be kestrel-kb" in f for f in result.failures))
+
+    def test_session_check_wrong_basename_after_exists(self):
+        wrong = self.base / "not-kestrel-kb"
+        wrong.mkdir()
+        result = run_session_check(
+            root=wrong,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertFalse(result.ok)
+        self.assertTrue(any("must be kestrel-kb" in f for f in result.failures))
+
+    def test_env_override_ignored_without_gate(self):
+        fake = self.base / "env-redirect-missing"
+        with env_override(**{ENV_ROOT: str(fake), ENV_ALLOW_OVERRIDES: None}):
+            result = run_session_check(
+                self_model_kb=self.self_model,
+                watchline=self.watchline,
+                homelab=self.homelab,
+            )
+        self.assertFalse(any(str(fake) in f for f in result.failures))
+
+    def test_gated_env_override_works(self):
+        with env_override(**{ENV_ROOT: str(self.root), ENV_ALLOW_OVERRIDES: "1"}):
+            result = run_session_check(
+                self_model_kb=self.self_model,
+                watchline=self.watchline,
+                homelab=self.homelab,
+            )
+        self.assertTrue(result.ok, result.failures)
+
+    def test_cli_root_refused_without_gate(self):
+        rc = cli_main(["session-check", "--root", str(self.root)])
+        self.assertEqual(rc, 1)
+
+    def test_cli_root_allowed_with_gate(self):
+        with env_override(**{ENV_ALLOW_OVERRIDES: "1"}):
+            buf = StringIO()
+            with redirect_stderr(buf):
+                rc = cli_main(["session-check", "--root", str(self.root)])
+        self.assertEqual(rc, 0, buf.getvalue())
+
+    def test_session_check_no_mutation(self):
+        before = {
+            p: p.read_bytes() if p.is_file() else None
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
+        run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        after = {
+            p: p.read_bytes() if p.is_file() else None
+            for p in self.root.rglob("*")
+            if p.is_file()
+        }
+        self.assertEqual(before, after)
+
+    def test_session_check_does_not_read_sibling_contents(self):
+        secret = self.self_model / "SECRET_SHOULD_NOT_BE_READ.txt"
+        secret.write_text("PRIVATE")
+        result = run_session_check(
+            root=self.root,
+            self_model_kb=self.self_model,
+            watchline=self.watchline,
+            homelab=self.homelab,
+        )
+        self.assertTrue(result.ok)
+        self.assertNotIn("PRIVATE", "\n".join(result.lines))
+
+    def test_session_check_cli_smoke(self):
+        result = run_kb("session-check")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+
+class TestReviewAfterDoctor(unittest.TestCase):
+    REF_TODAY = "2026-07-28"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp)
+        scaffold_repo(self.root, with_index=True)
+        os.chdir(self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _write_record(self, rid: str, status: str, review_after: str) -> None:
+        meta = {
+            "id": rid,
+            "type": "decision",
+            "status": status,
+            "confidence": "high",
+            "source": "test",
+            "sensitivity": "internal",
+            "created": "2026-07-28",
+            "updated": "2026-07-28",
+            "review_after": review_after,
+            "supersedes": [],
+            "tags": [],
+        }
+        write_memory_file(
+            MemoryRecord(
+                path=self.root / f"memory/decisions/{rid}.md",
+                meta=meta,
+                body=f"# {rid}\n\nBody.\n",
+            )
+        )
+
+    def _doctor(self, *args: str) -> tuple[int, str]:
+        buf = StringIO()
+        with redirect_stderr(buf):
+            rc = cli_main(["doctor", *args])
+        return rc, buf.getvalue()
+
+    def test_overdue_before_today_warns_default_exit_zero(self):
+        self._write_record("overdue-policy", "active", "2026-07-27")
+        run_kb("index", cwd=self.root)
+        rc, err = self._doctor("--today", self.REF_TODAY)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("overdue-policy", err)
+        self.assertIn("WARNING", err)
+
+    def test_equal_today_not_overdue(self):
+        self._write_record("due-today", "active", self.REF_TODAY)
+        run_kb("index", cwd=self.root)
+        records, _ = load_all_records(self.root)
+        warnings = collect_overdue_review_warnings(
+            records,
+            today=__import__("datetime").date.fromisoformat(self.REF_TODAY),
+        )
+        self.assertEqual(warnings, [])
+        rc, err = self._doctor("--today", self.REF_TODAY)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("due-today", err)
+
+    def test_after_today_not_overdue(self):
+        self._write_record("future-policy", "active", "2026-07-29")
+        run_kb("index", cwd=self.root)
+        rc, err = self._doctor("--today", self.REF_TODAY)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("future-policy", err)
+
+    def test_strict_review_exits_nonzero_when_overdue(self):
+        self._write_record("overdue-strict", "active", "2026-01-01")
+        run_kb("index", cwd=self.root)
+        rc, err = self._doctor("--today", self.REF_TODAY, "--strict-review")
+        self.assertEqual(rc, 1)
+        self.assertIn("overdue-strict", err)
+
+    def test_strict_review_exits_zero_when_none_overdue(self):
+        self._write_record("fresh-policy", "active", "2026-12-31")
+        run_kb("index", cwd=self.root)
+        rc, err = self._doctor("--today", self.REF_TODAY, "--strict-review")
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("WARNING", err)
+
+    def test_superseded_not_warned(self):
+        self._write_record("old-overdue", "superseded", "2020-01-01")
+        run_kb("index", cwd=self.root)
+        rc, err = self._doctor("--today", self.REF_TODAY)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("old-overdue", err)
 
 
 if __name__ == "__main__":

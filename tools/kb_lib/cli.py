@@ -23,6 +23,7 @@ from .paths import (
 from .search import format_hits, search_records
 from .validator import (
     ValidationReport,
+    collect_overdue_review_warnings,
     load_all_records,
     validate_cross_record,
     validate_record_meta,
@@ -44,15 +45,44 @@ def _regenerate_index(root: Path) -> None:
     atomic_write(index_path(root), generate_index(root, canonical))
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
+def _parse_reference_date(raw: str | None) -> date | None:
+    if not raw:
+        return None
+    return date.fromisoformat(raw)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
     root = find_root()
     report = validate_repository(root, check_index=True)
+    records, _ = load_all_records(root)
+    today = _parse_reference_date(getattr(args, "today", None))
+    review_warnings = collect_overdue_review_warnings(records, today=today)
     for issue in report.issues:
         print(f"{issue.level.upper()}: {issue.path}: {issue.message}", file=sys.stderr)
+    for issue in review_warnings:
+        print(f"WARNING: {issue.path}: {issue.message}", file=sys.stderr)
     if report.ok:
         print("ok: repository healthy")
+        if review_warnings and args.strict_review:
+            return 1
         return 0
     return 1
+
+
+def cmd_session_check(args: argparse.Namespace) -> int:
+    from .session_check import emit_session_check, overrides_allowed, run_session_check
+
+    root = None
+    if args.root:
+        if not overrides_allowed():
+            print(
+                "refuse: --root requires KESTREL_KB_SESSION_CHECK_ALLOW_OVERRIDES=1 (test-only)",
+                file=sys.stderr,
+            )
+            return 1
+        root = Path(args.root).resolve()
+    result = run_session_check(root=root)
+    return emit_session_check(result)
 
 
 def cmd_index(_args: argparse.Namespace) -> int:
@@ -278,7 +308,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kb", description="Kestrel operational memory CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="Validate repository health")
+    p_doctor = sub.add_parser("doctor", help="Validate repository health")
+    p_doctor.add_argument(
+        "--strict-review",
+        action="store_true",
+        help="Exit nonzero when active records are past review_after",
+    )
+    p_doctor.add_argument(
+        "--today",
+        metavar="YYYY-MM-DD",
+        help=argparse.SUPPRESS,
+    )
+    p_session = sub.add_parser("session-check", help="Validate session-start workspace readiness")
+    p_session.add_argument(
+        "--root",
+        help=argparse.SUPPRESS,
+    )
     sub.add_parser("index", help="Regenerate INDEX.md")
 
     p_search = sub.add_parser("search", help="Search memory records")
@@ -309,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     handlers = {
         "doctor": cmd_doctor,
+        "session-check": cmd_session_check,
         "index": cmd_index,
         "search": cmd_search,
         "remember": cmd_remember,
