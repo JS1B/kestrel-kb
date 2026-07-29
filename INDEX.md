@@ -30,6 +30,7 @@ Regenerate: `./tools/kb index`
 | internal-ca-stage-1-complete | superseded | high | Internal CA stage 1 complete | `memory/decisions/internal-ca-stage-1-complete.md` | 2027-01-25 |
 | internal-ca-stage-1-complete-on-rock | active | high | Internal CA stage 1 complete on rock | `memory/decisions/internal-ca-stage-1-complete-on-rock.md` | 2027-01-25 |
 | kestrel-primary-worker-topology-on-rock | active | high | Kestrel-primary worker topology on rock | `memory/decisions/kestrel-primary-worker-topology-on-rock.md` | 2027-01-24 |
+| operator-notify-via-kestrel-notify-not-ntfy | active | high | Operator notify via kestrel-notify not ntfy | `memory/decisions/operator-notify-via-kestrel-notify-not-ntfy.md` | 2027-01-25 |
 | roadmap-markdown-first | active | high | Roadmap: Markdown and search first | `memory/decisions/roadmap-markdown-first.md` | 2027-01-28 |
 | worker-topology-on-rock-with-kestrel-kb | superseded | high | Worker topology on rock with Kestrel KB | `memory/decisions/worker-topology-on-rock-with-kestrel-kb.md` | 2027-01-24 |
 | worker-topology-rock | superseded | high | Worker topology on rock | `memory/decisions/worker-topology-rock.md` | 2027-01-28 |
